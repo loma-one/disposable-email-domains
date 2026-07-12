@@ -4,6 +4,7 @@
 
 import re
 import sys
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Set
 
 from bs4 import BeautifulSoup
@@ -184,6 +185,179 @@ class NoopmailFetcher(DomainFetcher):
         return domains
 
 
+class GPTMailFetcher(DomainFetcher):
+    """Fetcher for `mail chatgpt org uk` disposable email domains"""
+
+    def __init__(self):
+        super().__init__("GPTMail")
+        self.url = "https://mail.chatgpt.org.uk/api/domains/status"
+
+    def fetch(self) -> Set[str]:
+        """Fetch domains from GPTMail domains status API"""
+        try:
+            response = get(self.url, timeout=30)
+            response.raise_for_status()
+        except Exception as e:
+            print(f"Error fetching {self.name} domains: {e}", file=sys.stderr)
+            return set()
+
+        # Parse JSON
+        try:
+            data = response.json()
+        except Exception as e:
+            print(f"Error parsing JSON from {self.name}: {e}", file=sys.stderr)
+            return set()
+
+        domains = set()
+        if "success" in data and data["success"] and "data" in data:
+            domain_data = data["data"]
+            # Handle both list format and object with domains array
+            if isinstance(domain_data, list):
+                for entry in domain_data:
+                    if isinstance(entry, dict) and "domain_name" in entry:
+                        domain = entry["domain_name"].lower().strip()
+                        if domain:
+                            domains.add(domain)
+            elif isinstance(domain_data, dict) and "domains" in domain_data:
+                for entry in domain_data["domains"]:
+                    if isinstance(entry, dict) and "domain_name" in entry:
+                        domain = entry["domain_name"].lower().strip()
+                        if domain:
+                            domains.add(domain)
+
+        if not domains:
+            print(f"Warning: No domains found from {self.name}. The page structure may have changed.", file=sys.stderr)
+
+        return domains
+
+class TinyhostFetcher(DomainFetcher):
+    """Fetcher for `tinyhost shop` disposable email domains"""
+
+    def __init__(self):
+        super().__init__("Tinyhost")
+        self.url = "https://tinyhost.shop/api/all-domains/"
+
+    def fetch(self) -> Set[str]:
+        """Fetch all online domains from the Tinyhost API"""
+        try:
+            response = get(self.url, timeout=30)
+            response.raise_for_status()
+        except Exception as e:
+            print(f"Error fetching {self.name} domains: {e}", file=sys.stderr)
+            return set()
+
+        try:
+            data = response.json()
+        except Exception as e:
+            print(f"Error parsing JSON from {self.name}: {e}", file=sys.stderr)
+            return set()
+
+        domains = set()
+        if isinstance(data, dict) and "domains" in data:
+            for domain in data["domains"]:
+                domain = domain.lower().strip()
+                if domain:
+                    domains.add(domain)
+
+        if not domains:
+            print(f"Warning: No domains found from {self.name}. The page structure may have changed.", file=sys.stderr)
+        return domains
+
+
+class GeneratorEmailFetcher(DomainFetcher):
+    """Fetcher for 'generator.email' disposable email domains"""
+
+    def __init__(self):
+        super().__init__("GeneratorEmail")
+        self.url = "https://generator.email/"
+
+    def _fetch_once(self, attempt: int, domain_pattern: "re.Pattern") -> Set[str]:
+        """Fetch and parse domains from a single page load"""
+        domains = set()
+        try:
+            response = get(self.url, timeout=30)
+            response.raise_for_status()
+        except Exception as e:
+            print(f"Error fetching {self.name} domains (attempt {attempt + 1}): {e}", file=sys.stderr)
+            return domains
+
+        soup = BeautifulSoup(response.text, "html.parser")
+
+        # Domains appear as <li> items in the domain dropdown list
+        for li in soup.find_all("li"):
+            text = li.get_text(strip=True).lower()
+            if domain_pattern.match(text):
+                domains.add(text)
+
+        # Fallback: domains also appear in <p onclick="change_dropdown_list(...)">
+        for p in soup.find_all("p", onclick=re.compile("change_dropdown_list")):
+            text = p.get_text(strip=True).lower()
+            if domain_pattern.match(text):
+                domains.add(text)
+
+        return domains
+
+    def fetch(self) -> Set[str]:
+        """Fetch domains by checking the page concurrently (domain list rotates)"""
+        domains = set()
+        domain_pattern = re.compile(
+            r'^([a-zA-Z0-9](?:[a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?)+)$'
+        )
+
+        with ThreadPoolExecutor(max_workers=50) as executor:
+            futures = [executor.submit(self._fetch_once, i, domain_pattern) for i in range(50)]
+            for future in as_completed(futures):
+                domains.update(future.result())
+
+        if not domains:
+            print(f"Warning: No domains found from {self.name}. The page structure may have changed.", file=sys.stderr)
+
+        return domains
+
+
+class CyberTempFetcher(DomainFetcher):
+    """Fetcher for 'cybertemp xyz' disposable email domains"""
+
+    def __init__(self):
+        super().__init__("CyberTemp")
+        self.url = "https://api.cybertemp.xyz/getDomains"
+
+    def fetch(self) -> Set[str]:
+        """Fetch domains from CyberTemp API"""
+        try:
+            response = get(self.url, timeout=30)
+            response.raise_for_status()
+        except Exception as e:
+            print(f"Error fetching {self.name} domains: {e}", file=sys.stderr)
+            return set()
+
+        try:
+            data = response.json()
+        except Exception as e:
+            print(f"Error parsing JSON from {self.name}: {e}", file=sys.stderr)
+            return set()
+
+        domains = set()
+        # Handle list response: ["domain1.com", "domain2.com", ...]
+        if isinstance(data, list):
+            for entry in data:
+                if isinstance(entry, str) and entry:
+                    domains.add(entry.lower().strip())
+        # Handle object response: {"domains": [...]}
+        elif isinstance(data, dict):
+            for key in ("domains", "data"):
+                if key in data and isinstance(data[key], list):
+                    for entry in data[key]:
+                        if isinstance(entry, str) and entry:
+                            domains.add(entry.lower().strip())
+                    break
+
+        if not domains:
+            print(f"Warning: No domains found from {self.name}. The page structure may have changed.", file=sys.stderr)
+
+        return domains
+
+
 def load_existing_domains(filename: str) -> Set[str]:
     """Load existing domains from blocklist file"""
     try:
@@ -248,6 +422,10 @@ FETCHERS = [
     TmailFetcher(),
     NoopmailFetcher(),
     YoursToolsFetcher(),
+    GPTMailFetcher(),
+    TinyhostFetcher(),
+    GeneratorEmailFetcher(),
+    CyberTempFetcher(),
     # Example: AnotherFetcher(),
 ]
 
